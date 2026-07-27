@@ -74,7 +74,7 @@ pub struct BundleInfo {
     pub(super) contributed_component_ids: Box<[ComponentId]>,
 
     /// The list of constructors for all required components indirectly contributed by this bundle.
-    pub(super) required_component_constructors: Box<[RequiredComponentConstructor]>,
+    pub(crate) required_component_constructors: Box<[RequiredComponentConstructor]>,
 }
 
 impl BundleInfo {
@@ -162,7 +162,7 @@ impl BundleInfo {
 
     /// Returns the length of the explicit components part of the [`contributed_components`](Self::contributed_components) list.
     #[inline]
-    pub(super) fn explicit_components_len(&self) -> usize {
+    pub(crate) fn explicit_components_len(&self) -> usize {
         self.contributed_component_ids.len() - self.required_component_constructors.len()
     }
 

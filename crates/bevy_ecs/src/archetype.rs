@@ -20,13 +20,13 @@
 //! [`World::archetypes`]: crate::world::World::archetypes
 
 use crate::{
-    bundle::BundleId,
+    bundle::{BundleId, BundleInfo},
     component::{ComponentId, Components, RequiredComponentConstructor, StorageType},
     entity::{Entity, EntityLocation},
     event::Event,
     observer::Observers,
     query::DebugCheckedUnwrap,
-    storage::{ImmutableSparseSet, SparseArray, SparseSet, TableId, TableRow},
+    storage::{ImmutableSparseSet, SparseArray, SparseSet, Storages, TableId, TableRow},
 };
 use alloc::{boxed::Box, vec::Vec};
 use bevy_platform::collections::{hash_map::Entry, HashMap};
@@ -982,6 +982,143 @@ impl Archetypes {
                     .flags
                     .set(flags, set);
             }
+        }
+    }
+
+    /// Inserts a bundle into the given archetype and returns the resulting archetype and whether a new archetype was created.
+    /// This could be the same [`ArchetypeId`], in the event that inserting the given bundle
+    /// does not result in an [`Archetype`] change.
+    ///
+    /// Results are cached in the [`Archetype`] graph to avoid redundant work.
+    ///
+    /// # Safety
+    /// `components` must be the same components as passed in when calling `BundleInfo::new`
+    pub(crate) unsafe fn insert_bundle_into_archetype(
+        &mut self,
+        bundle_info: &BundleInfo,
+        storages: &mut Storages,
+        components: &Components,
+        observers: &Observers,
+        archetype_id: ArchetypeId,
+    ) -> (ArchetypeId, bool) {
+        if let Some(archetype_after_insert_id) = self[archetype_id]
+            .edges()
+            .get_archetype_after_bundle_insert(bundle_info.id())
+        {
+            return (archetype_after_insert_id, false);
+        }
+
+        let mut new_table_components = Vec::new();
+        let mut new_sparse_set_components = Vec::new();
+        let mut bundle_status = Vec::with_capacity(bundle_info.explicit_components_len());
+        let mut added_required_components = Vec::new();
+        let mut added = Vec::new();
+        let mut existing = Vec::new();
+
+        let current_archetype = &mut self[archetype_id];
+        for component_id in bundle_info.iter_explicit_components() {
+            if current_archetype.contains(component_id) {
+                bundle_status.push(ComponentStatus::Existing);
+                existing.push(component_id);
+            } else {
+                bundle_status.push(ComponentStatus::Added);
+                added.push(component_id);
+                // SAFETY: component_id exists
+                let component_info = unsafe { components.get_info_unchecked(component_id) };
+                match component_info.storage_type() {
+                    StorageType::Table => new_table_components.push(component_id),
+                    StorageType::SparseSet => new_sparse_set_components.push(component_id),
+                }
+            }
+        }
+
+        for (index, component_id) in bundle_info.iter_required_components().enumerate() {
+            if !current_archetype.contains(component_id) {
+                added_required_components
+                    .push(bundle_info.required_component_constructors[index].clone());
+                added.push(component_id);
+                // SAFETY: component_id exists
+                let component_info = unsafe { components.get_info_unchecked(component_id) };
+                match component_info.storage_type() {
+                    StorageType::Table => {
+                        new_table_components.push(component_id);
+                    }
+                    StorageType::SparseSet => {
+                        new_sparse_set_components.push(component_id);
+                    }
+                }
+            }
+        }
+
+        if new_table_components.is_empty() && new_sparse_set_components.is_empty() {
+            let edges = current_archetype.edges_mut();
+            // The archetype does not change when we insert this bundle.
+            edges.cache_archetype_after_bundle_insert(
+                bundle_info.id(),
+                archetype_id,
+                bundle_status,
+                added_required_components,
+                added,
+                existing,
+            );
+            (archetype_id, false)
+        } else {
+            let table_id;
+            let table_components;
+            let sparse_set_components;
+            // The archetype changes when we insert this bundle. Prepare the new archetype and storages.
+            {
+                let current_archetype = &self[archetype_id];
+                table_components = if new_table_components.is_empty() {
+                    // If there are no new table components, we can keep using this table.
+                    table_id = current_archetype.table_id();
+                    current_archetype.table_components().collect()
+                } else {
+                    new_table_components.extend(current_archetype.table_components());
+                    // Sort to ignore order while hashing.
+                    new_table_components.sort_unstable();
+                    // SAFETY: all component ids in `new_table_components` exist
+                    table_id = unsafe {
+                        storages
+                            .tables
+                            .get_id_or_insert(&new_table_components, components)
+                    };
+
+                    new_table_components
+                };
+
+                sparse_set_components = if new_sparse_set_components.is_empty() {
+                    current_archetype.sparse_set_components().collect()
+                } else {
+                    new_sparse_set_components.extend(current_archetype.sparse_set_components());
+                    // Sort to ignore order while hashing.
+                    new_sparse_set_components.sort_unstable();
+                    new_sparse_set_components
+                };
+            };
+            // SAFETY: ids in self must be valid
+            let (new_archetype_id, is_new_created) = unsafe {
+                self.get_id_or_insert(
+                    components,
+                    observers,
+                    table_id,
+                    table_components,
+                    sparse_set_components,
+                )
+            };
+
+            // Add an edge from the old archetype to the new archetype.
+            self[archetype_id]
+                .edges_mut()
+                .cache_archetype_after_bundle_insert(
+                    bundle_info.id(),
+                    new_archetype_id,
+                    bundle_status,
+                    added_required_components,
+                    added,
+                    existing,
+                );
+            (new_archetype_id, is_new_created)
         }
     }
 }

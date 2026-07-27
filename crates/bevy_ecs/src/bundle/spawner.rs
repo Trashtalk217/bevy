@@ -47,8 +47,8 @@ impl<'w> BundleSpawner<'w> {
         let bundle_info = unsafe { world.bundles.get_unchecked(bundle_id) };
         // SAFETY: retrieved from same world in previous line
         let (new_archetype_id, is_new_created) = unsafe {
-            bundle_info.insert_bundle_into_archetype(
-                &mut world.archetypes,
+            world.archetypes.insert_bundle_into_archetype(
+                bundle_info,
                 &mut world.storages,
                 &world.components,
                 &world.observers,

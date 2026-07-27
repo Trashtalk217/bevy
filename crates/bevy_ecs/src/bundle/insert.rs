@@ -1,22 +1,16 @@
-use alloc::vec::Vec;
 use bevy_ptr::{ConstNonNull, MovingPtr};
 use core::ptr::NonNull;
 
 use crate::{
-    archetype::{
-        Archetype, ArchetypeAfterBundleInsert, ArchetypeCreated, ArchetypeId, Archetypes,
-        ComponentStatus,
-    },
+    archetype::{Archetype, ArchetypeAfterBundleInsert, ArchetypeCreated, ArchetypeId},
     bundle::{ArchetypeMoveType, Bundle, BundleId, BundleInfo, DynamicBundle, InsertMode},
     change_detection::{MaybeLocation, Tick},
-    component::{Components, StorageType},
     entity::{Entities, Entity, EntityLocation},
     event::EntityComponentsTrigger,
     lifecycle::{Add, Discard, Insert, ADD, DISCARD, INSERT},
-    observer::Observers,
     query::DebugCheckedUnwrap as _,
     relationship::RelationshipHookMode,
-    storage::{SparseSets, Storages, Table},
+    storage::{SparseSets, Table},
     world::{unsafe_world_cell::UnsafeWorldCell, World},
 };
 
@@ -62,8 +56,8 @@ impl<'w> BundleInserter<'w> {
         let bundle_info = unsafe { world.bundles.get_unchecked(bundle_id) };
         // SAFETY: same world
         let (new_archetype_id, is_new_created) = unsafe {
-            bundle_info.insert_bundle_into_archetype(
-                &mut world.archetypes,
+            world.archetypes.insert_bundle_into_archetype(
+                bundle_info,
                 &mut world.storages,
                 &world.components,
                 &world.observers,
@@ -519,142 +513,5 @@ impl<'w> BundleInserter<'w> {
     pub(crate) fn entities(&mut self) -> &mut Entities {
         // SAFETY: No outstanding references to self.world, changes to entities cannot invalidate our internal pointers
         unsafe { &mut self.world.world_mut().entities }
-    }
-}
-
-impl BundleInfo {
-    /// Inserts a bundle into the given archetype and returns the resulting archetype and whether a new archetype was created.
-    /// This could be the same [`ArchetypeId`], in the event that inserting the given bundle
-    /// does not result in an [`Archetype`] change.
-    ///
-    /// Results are cached in the [`Archetype`] graph to avoid redundant work.
-    ///
-    /// # Safety
-    /// `components` must be the same components as passed in [`Self::new`]
-    pub(crate) unsafe fn insert_bundle_into_archetype(
-        &self,
-        archetypes: &mut Archetypes,
-        storages: &mut Storages,
-        components: &Components,
-        observers: &Observers,
-        archetype_id: ArchetypeId,
-    ) -> (ArchetypeId, bool) {
-        if let Some(archetype_after_insert_id) = archetypes[archetype_id]
-            .edges()
-            .get_archetype_after_bundle_insert(self.id)
-        {
-            return (archetype_after_insert_id, false);
-        }
-        let mut new_table_components = Vec::new();
-        let mut new_sparse_set_components = Vec::new();
-        let mut bundle_status = Vec::with_capacity(self.explicit_components_len());
-        let mut added_required_components = Vec::new();
-        let mut added = Vec::new();
-        let mut existing = Vec::new();
-
-        let current_archetype = &mut archetypes[archetype_id];
-        for component_id in self.iter_explicit_components() {
-            if current_archetype.contains(component_id) {
-                bundle_status.push(ComponentStatus::Existing);
-                existing.push(component_id);
-            } else {
-                bundle_status.push(ComponentStatus::Added);
-                added.push(component_id);
-                // SAFETY: component_id exists
-                let component_info = unsafe { components.get_info_unchecked(component_id) };
-                match component_info.storage_type() {
-                    StorageType::Table => new_table_components.push(component_id),
-                    StorageType::SparseSet => new_sparse_set_components.push(component_id),
-                }
-            }
-        }
-
-        for (index, component_id) in self.iter_required_components().enumerate() {
-            if !current_archetype.contains(component_id) {
-                added_required_components.push(self.required_component_constructors[index].clone());
-                added.push(component_id);
-                // SAFETY: component_id exists
-                let component_info = unsafe { components.get_info_unchecked(component_id) };
-                match component_info.storage_type() {
-                    StorageType::Table => {
-                        new_table_components.push(component_id);
-                    }
-                    StorageType::SparseSet => {
-                        new_sparse_set_components.push(component_id);
-                    }
-                }
-            }
-        }
-
-        if new_table_components.is_empty() && new_sparse_set_components.is_empty() {
-            let edges = current_archetype.edges_mut();
-            // The archetype does not change when we insert this bundle.
-            edges.cache_archetype_after_bundle_insert(
-                self.id,
-                archetype_id,
-                bundle_status,
-                added_required_components,
-                added,
-                existing,
-            );
-            (archetype_id, false)
-        } else {
-            let table_id;
-            let table_components;
-            let sparse_set_components;
-            // The archetype changes when we insert this bundle. Prepare the new archetype and storages.
-            {
-                let current_archetype = &archetypes[archetype_id];
-                table_components = if new_table_components.is_empty() {
-                    // If there are no new table components, we can keep using this table.
-                    table_id = current_archetype.table_id();
-                    current_archetype.table_components().collect()
-                } else {
-                    new_table_components.extend(current_archetype.table_components());
-                    // Sort to ignore order while hashing.
-                    new_table_components.sort_unstable();
-                    // SAFETY: all component ids in `new_table_components` exist
-                    table_id = unsafe {
-                        storages
-                            .tables
-                            .get_id_or_insert(&new_table_components, components)
-                    };
-
-                    new_table_components
-                };
-
-                sparse_set_components = if new_sparse_set_components.is_empty() {
-                    current_archetype.sparse_set_components().collect()
-                } else {
-                    new_sparse_set_components.extend(current_archetype.sparse_set_components());
-                    // Sort to ignore order while hashing.
-                    new_sparse_set_components.sort_unstable();
-                    new_sparse_set_components
-                };
-            };
-            // SAFETY: ids in self must be valid
-            let (new_archetype_id, is_new_created) = unsafe {
-                archetypes.get_id_or_insert(
-                    components,
-                    observers,
-                    table_id,
-                    table_components,
-                    sparse_set_components,
-                )
-            };
-
-            // Add an edge from the old archetype to the new archetype.
-            archetypes[archetype_id]
-                .edges_mut()
-                .cache_archetype_after_bundle_insert(
-                    self.id,
-                    new_archetype_id,
-                    bundle_status,
-                    added_required_components,
-                    added,
-                    existing,
-                );
-            (new_archetype_id, is_new_created)
-        }
     }
 }
