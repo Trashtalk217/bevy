@@ -771,7 +771,7 @@ pub type ComponentIndex = HashMap<ComponentId, HashMap<ArchetypeId, ArchetypeRec
 /// [`World`]: crate::world::World
 /// [module level documentation]: crate::archetype
 pub struct Archetypes {
-    pub(crate) archetypes: Vec<Archetype>,
+    archetypes: Vec<Archetype>,
     /// find the archetype id by the archetype's components
     by_components: HashMap<ArchetypeComponents, ArchetypeId>,
     /// find all the archetypes that contain a component
@@ -885,10 +885,26 @@ impl Archetypes {
         }
     }
 
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut Archetype {
+        self.archetypes.as_mut_ptr()
+    }
+
     /// Returns a read-only iterator over all archetypes.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &Archetype> {
         self.archetypes.iter()
+    }
+
+    /// Returns a mutable iterator over all archetypes matching a specific archetype.
+    // TODO: Use the by_component map to speed this up.
+    #[inline]
+    pub fn iter_mut_by_component(
+        &mut self,
+        component_id: ComponentId,
+    ) -> impl Iterator<Item = &mut Archetype> {
+        self.archetypes
+            .iter_mut()
+            .filter(move |archetype| archetype.contains(component_id))
     }
 
     /// Gets the archetype id matching the given inputs or inserts a new one if it doesn't exist.

@@ -244,7 +244,7 @@ impl<'w> BundleInserter<'w> {
                 let (archetypes_ptr, tables, sparse_sets, entities) = {
                     // SAFETY: has read+write perms, we do not use the `&mut World` to access archetypes, world ref will be dropped after this block
                     let world = unsafe { world.world_mut() };
-                    let archetype_ptr: *mut Archetype = world.archetypes.archetypes.as_mut_ptr();
+                    let archetype_ptr: *mut Archetype = world.archetypes.as_mut_ptr();
                     (
                         archetype_ptr,
                         &mut world.storages.tables,
