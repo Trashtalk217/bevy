@@ -1122,9 +1122,8 @@ impl World {
         // SAFETY:
         // - This is called exactly once after `get_components` has been called in `spawn_non_existent`.
         // - `bundle` had it's `get_components` function called exactly once inside `spawn_non_existent`.
-        bundle.partial_move(|bundle| {
-            unsafe { B::apply_effect(bundle, &mut entity) };
-        });
+        unsafe { B::apply_effect(bundle, &mut entity) };
+
         entity
     }
 

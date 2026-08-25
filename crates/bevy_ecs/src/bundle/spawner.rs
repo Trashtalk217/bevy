@@ -47,14 +47,13 @@ pub(crate) unsafe fn spawn_bundle_at<B: DynamicBundle>(
         )
     };
 
-    // THIS IS DEFINITELY WRONG!
     if is_new_created {
-        // SAFETY:
-        // - we have exclusive ownership of the world and hold no references to command queue or component data
-        // - as this goes through `DeferredWorld`, our pointers will not be invalidated
-        unsafe { world.as_unsafe_world_cell_readonly().into_deferred() }
-            .trigger(ArchetypeCreated(new_archetype_id));
+        world.trigger(ArchetypeCreated(new_archetype_id));
     }
+
+    // Double work...
+    // SAFETY: see precondition
+    let bundle_info = unsafe { world.bundles.get_unchecked(bundle_id) };
 
     let archetype = &mut world.archetypes[new_archetype_id];
     let table = &mut world.storages.tables[archetype.table_id()];
@@ -89,6 +88,60 @@ pub(crate) unsafe fn spawn_bundle_at<B: DynamicBundle>(
         entities.set_location(entity.index(), Some(location));
         entities.mark_spawned_or_despawned(entity.index(), caller, change_tick);
     }
+
+    let archetype: NonNull<Archetype> = archetype.into();
+    let bundle_info: NonNull<BundleInfo> = unsafe { world.bundles.get_unchecked(bundle_id) }.into();
+
+    // SAFETY: We have no outstanding mutable references to world as they were dropped
+    let mut deferred_world = unsafe { world.as_unsafe_world_cell().into_deferred() };
+    // SAFETY: `DeferredWorld` cannot provide mutable access to `Archetypes`.
+    let archetype = unsafe { archetype.as_ref() };
+    // SAFETY: TODO
+    let bundle_info = unsafe { bundle_info.as_ref() };
+    // SAFETY: All components in the bundle are guaranteed to exist in the World
+    // as they must be initialized before creating the BundleInfo.
+    unsafe {
+        deferred_world.trigger_on_add(
+            archetype,
+            entity,
+            bundle_info.iter_contributed_components(),
+            caller,
+        );
+        if archetype.has_add_observer() {
+            // SAFETY: the ADD event_key corresponds to the Add event's type
+            deferred_world.trigger_raw(
+                ADD,
+                &mut Add { entity },
+                &mut EntityComponentsTrigger {
+                    components: bundle_info.contributed_components(),
+                    old_archetype: None,
+                    new_archetype: Some(archetype),
+                },
+                caller,
+            );
+        }
+        deferred_world.trigger_on_insert(
+            archetype,
+            entity,
+            bundle_info.iter_contributed_components(),
+            caller,
+            RelationshipHookMode::Run,
+        );
+        if archetype.has_insert_observer() {
+            // SAFETY: the INSERT event_key corresponds to the Insert event's type
+            deferred_world.trigger_raw(
+                INSERT,
+                &mut Insert { entity },
+                &mut EntityComponentsTrigger {
+                    components: bundle_info.contributed_components(),
+                    old_archetype: None,
+                    new_archetype: Some(archetype),
+                },
+                caller,
+            );
+        }
+    };
+
     location
 }
 

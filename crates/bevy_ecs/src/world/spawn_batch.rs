@@ -1,15 +1,17 @@
 use core::ptr::NonNull;
 
-use bevy_ptr::{move_as_ptr, ConstNonNull};
+use bevy_ptr::move_as_ptr;
 
 use crate::{
     archetype::{Archetype, ArchetypeCreated, ArchetypeId, SpawnBundleStatus},
-    bundle::{Bundle, BundleInfo, NoBundleEffect},
+    bundle::{Bundle, BundleId, NoBundleEffect},
     change_detection::MaybeLocation,
     change_detection::Tick,
-    entity::{AllocEntitiesIterator, Entity, EntitySetIterator},
+    entity::{Entity, EntitySetIterator},
+    event::EntityComponentsTrigger,
+    lifecycle::{Add, Insert, ADD, INSERT},
     storage::Table,
-    world::{InsertMode, UnsafeWorldCell, World},
+    world::{InsertMode, RelationshipHookMode, UnsafeWorldCell, World},
 };
 use core::iter::FusedIterator;
 
@@ -24,11 +26,10 @@ where
 {
     inner: I,
     world: UnsafeWorldCell<'w>,
-    bundle_info: ConstNonNull<BundleInfo>,
+    bundle_id: BundleId,
     table: NonNull<Table>,
     archetype: NonNull<Archetype>,
     change_tick: Tick,
-    allocator: AllocEntitiesIterator<'w>,
     caller: MaybeLocation,
 }
 
@@ -59,6 +60,10 @@ where
             )
         };
 
+        if is_new_created {
+            world.trigger(ArchetypeCreated(new_archetype_id));
+        }
+
         let archetype = &mut world.archetypes[new_archetype_id];
         let table = &mut world.storages.tables[archetype.table_id()];
 
@@ -69,20 +74,10 @@ where
         let archetype: NonNull<Archetype> = archetype.into();
         let table: NonNull<Table> = table.into();
 
-        // DEFINITELY WRONG
-        if is_new_created {
-            // SAFETY:
-            // - we have exclusive ownership of the world and hold no references to command queue or component data
-            // - as this goes through `DeferredWorld`, our pointers will not be invalidated
-            unsafe { world.as_unsafe_world_cell_readonly().into_deferred() }
-                .trigger(ArchetypeCreated(new_archetype_id));
-        }
-
         Self {
             inner: iter,
-            allocator: world.entity_allocator.alloc_many(length as u32),
-            world: world.as_unsafe_world_cell_readonly(), // HIGHLY ILLEGAL
-            bundle_info: bundle_info.into(),
+            world: world.as_unsafe_world_cell(),
+            bundle_id,
             table: table.into(),
             archetype,
             change_tick,
@@ -91,6 +86,7 @@ where
     }
 }
 
+/*
 impl<I> Drop for SpawnBatchIter<'_, I>
 where
     I: Iterator,
@@ -109,6 +105,7 @@ where
         unsafe { self.world.world_mut().flush() };
     }
 }
+*/
 
 impl<I> Iterator for SpawnBatchIter<'_, I>
 where
@@ -120,13 +117,11 @@ where
     fn next(&mut self) -> Option<Entity> {
         let bundle = self.inner.next()?;
         move_as_ptr!(bundle);
-        let entity = self.allocator.next().unwrap_or_else(|| {
-            // Safety: TODO
-            unsafe { &mut self.world.world_mut().entity_allocator }.alloc()
-        });
+        // SAFETY: TODO
+        let entity = unsafe { &mut self.world.world_mut().entity_allocator }.alloc();
 
-        // SAFETY: We do not make any structural changes to the archetype graph through self.world so these pointers always remain valid
-        let bundle_info = unsafe { self.bundle_info.as_ref() };
+        // SAFETY: TODO
+        let bundle_info = unsafe { self.world.world_mut().bundles.get_unchecked(self.bundle_id) };
         // SAFETY: exclusive world access; reference does not outlife this block
         let table = unsafe { self.table.as_mut() };
         // SAFETY: exclusive world access; reference does not outlife this block
@@ -167,6 +162,54 @@ where
             entities.set_location(entity.index(), Some(location));
             entities.mark_spawned_or_despawned(entity.index(), self.caller, self.change_tick);
         };
+
+        // SAFETY: We have no outstanding mutable references to world as they were dropped
+        let mut deferred_world = unsafe { self.world.into_deferred() };
+
+        // SAFETY: All components in the bundle are guaranteed to exist in the World
+        // as they must be initialized before creating the BundleInfo.
+        unsafe {
+            deferred_world.trigger_on_add(
+                archetype,
+                entity,
+                bundle_info.iter_contributed_components(),
+                self.caller,
+            );
+            if archetype.has_add_observer() {
+                // SAFETY: the ADD event_key corresponds to the Add event's type
+                deferred_world.trigger_raw(
+                    ADD,
+                    &mut Add { entity },
+                    &mut EntityComponentsTrigger {
+                        components: bundle_info.contributed_components(),
+                        old_archetype: None,
+                        new_archetype: Some(archetype),
+                    },
+                    self.caller,
+                );
+            }
+            deferred_world.trigger_on_insert(
+                archetype,
+                entity,
+                bundle_info.iter_contributed_components(),
+                self.caller,
+                RelationshipHookMode::Run,
+            );
+            if archetype.has_insert_observer() {
+                // SAFETY: the INSERT event_key corresponds to the Insert event's type
+                deferred_world.trigger_raw(
+                    INSERT,
+                    &mut Insert { entity },
+                    &mut EntityComponentsTrigger {
+                        components: bundle_info.contributed_components(),
+                        old_archetype: None,
+                        new_archetype: Some(archetype),
+                    },
+                    self.caller,
+                );
+            }
+        };
+
         Some(entity)
     }
 
