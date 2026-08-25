@@ -32,8 +32,8 @@ pub use spawn_batch::*;
 use crate::{
     archetype::{ArchetypeId, Archetypes},
     bundle::{
-        Bundle, BundleId, BundleInfo, BundleInserter, BundleSpawner, Bundles, DynamicBundle,
-        InsertMode, NoBundleEffect,
+        Bundle, BundleId, BundleInfo, BundleInserter, Bundles, DynamicBundle, InsertMode,
+        NoBundleEffect,
     },
     change_detection::{
         CheckChangeTicks, ComponentTicks, ComponentTicksMut, MaybeLocation, MutUntyped, Tick,
@@ -1098,16 +1098,14 @@ impl World {
         caller: MaybeLocation,
     ) -> EntityWorldMut<'_> {
         let change_tick = self.change_tick();
-        let mut bundle_spawner = BundleSpawner::new::<B>(self, change_tick);
+        let bundle_id = self.register_bundle_info::<B>();
+
         let (bundle, entity_location) = bundle.partial_move(|bundle| {
-            // SAFETY:
-            // - `B` matches `bundle_spawner`'s type
-            // -  `entity` is allocated but non-existent
-            // - `B::Effect` is unconstrained, and `B::apply_effect` is called exactly once on the bundle after this call.
-            // - This function ensures that the value pointed to by `bundle` must not be accessed for anything afterwards by consuming
-            //   the `MovingPtr`. The value is otherwise only used to call `apply_effect` within this function, and the safety invariants
-            //   of `DynamicBundle` ensure that only the elements that have not been moved out of by this call are accessed.
-            unsafe { bundle_spawner.spawn_at::<B>(entity, bundle, caller) }
+            // SAFETY
+            // - The bundle was just registered.
+            unsafe {
+                crate::bundle::spawn_bundle_at(self, change_tick, entity, bundle, bundle_id, caller)
+            }
         });
 
         let mut entity_location = Some(entity_location);
@@ -1124,7 +1122,9 @@ impl World {
         // SAFETY:
         // - This is called exactly once after `get_components` has been called in `spawn_non_existent`.
         // - `bundle` had it's `get_components` function called exactly once inside `spawn_non_existent`.
-        unsafe { B::apply_effect(bundle, &mut entity) };
+        bundle.partial_move(|bundle| {
+            unsafe { B::apply_effect(bundle, &mut entity) };
+        });
         entity
     }
 

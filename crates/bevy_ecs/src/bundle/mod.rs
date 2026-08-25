@@ -13,6 +13,7 @@ mod writer;
 
 pub(crate) use insert::BundleInserter;
 pub(crate) use remove::BundleRemover;
+pub(crate) use spawner::spawn_bundle_at;
 pub(crate) use spawner::BundleSpawner;
 
 use bevy_ptr::MovingPtr;

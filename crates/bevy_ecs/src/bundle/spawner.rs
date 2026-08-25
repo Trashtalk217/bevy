@@ -24,6 +24,74 @@ pub(crate) struct BundleSpawner<'w> {
     change_tick: Tick,
 }
 
+// SAFETY:
+// - bundle must be registered.
+pub(crate) unsafe fn spawn_bundle_at<B: DynamicBundle>(
+    world: &mut World,
+    change_tick: Tick,
+    entity: Entity,
+    bundle: MovingPtr<'_, B>,
+    bundle_id: BundleId,
+    caller: MaybeLocation,
+) -> EntityLocation {
+    // SAFETY: see precondition
+    let bundle_info = unsafe { world.bundles.get_unchecked(bundle_id) };
+
+    let (new_archetype_id, is_new_created) = unsafe {
+        world.archetypes.insert_bundle_into_archetype(
+            bundle_info,
+            &mut world.storages,
+            &world.components,
+            &world.observers,
+            ArchetypeId::EMPTY,
+        )
+    };
+
+    // THIS IS DEFINITELY WRONG!
+    if is_new_created {
+        // SAFETY:
+        // - we have exclusive ownership of the world and hold no references to command queue or component data
+        // - as this goes through `DeferredWorld`, our pointers will not be invalidated
+        unsafe { world.as_unsafe_world_cell_readonly().into_deferred() }
+            .trigger(ArchetypeCreated(new_archetype_id));
+    }
+
+    let archetype = &mut world.archetypes[new_archetype_id];
+    let table = &mut world.storages.tables[archetype.table_id()];
+
+    let (sparse_sets, entities) = { (&mut world.storages.sparse_sets, &mut world.entities) };
+    // SAFETY: Component data will be written
+    let table_row = unsafe { table.allocate(entity) };
+    // SAFETY: row was just allocated & component data will be written
+    let location = unsafe { archetype.allocate(entity, table_row) };
+
+    // SAFETY:
+    // - bundle component status is always added, as entity previously didn't exist per precondition
+    // - `apply_effect` called if needed per precondition
+    // - table_row was just allocated, bundle matches
+    unsafe {
+        bundle_info.write_components(
+            table,
+            sparse_sets,
+            &SpawnBundleStatus,
+            bundle_info.required_component_constructors.iter(),
+            entity,
+            table_row,
+            change_tick,
+            bundle,
+            InsertMode::Replace,
+            caller,
+        );
+    }
+
+    // SAFETY: Entity was just spawned at this location
+    unsafe {
+        entities.set_location(entity.index(), Some(location));
+        entities.mark_spawned_or_despawned(entity.index(), caller, change_tick);
+    }
+    location
+}
+
 impl<'w> BundleSpawner<'w> {
     #[inline]
     pub fn new<T: Bundle>(world: &'w mut World, change_tick: Tick) -> Self {
