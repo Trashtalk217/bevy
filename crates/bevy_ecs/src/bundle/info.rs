@@ -236,7 +236,7 @@ impl BundleInfo {
     ///
     /// [`apply_effect`]: crate::bundle::DynamicBundle::apply_effect
     #[inline]
-    pub(super) unsafe fn write_components<'a, T: DynamicBundle, S: BundleComponentStatus>(
+    pub(crate) unsafe fn write_components<'a, T: DynamicBundle, S: BundleComponentStatus>(
         &self,
         table: &mut Table,
         sparse_sets: &mut SparseSets,
