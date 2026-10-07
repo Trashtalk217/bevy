@@ -4,17 +4,11 @@ use bevy::color::palettes::css::BLUE;
 use bevy::color::palettes::css::GREEN;
 use bevy::color::palettes::css::RED;
 use bevy::color::palettes::css::YELLOW;
-use bevy::log::LogPlugin;
-use bevy::log::DEFAULT_FILTER;
 use bevy::prelude::*;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(LogPlugin {
-            // Disable camera order ambiguity warnings
-            filter: format!("{DEFAULT_FILTER},bevy_render::camera=off"),
-            ..Default::default()
-        }))
+        .add_plugins(DefaultPlugins)
         .add_systems(Startup, setup)
         .run();
 }
@@ -79,7 +73,7 @@ fn setup(mut commands: Commands) {
                 BorderColor::all(YELLOW),
             ))
             .observe(
-                move |on_pressed: On<Pointer<Press>>,
+                move |on_pressed: On<PointerPress>,
                       mut label_query: Query<&mut Text>,
                       mut camera_query: Query<&mut Camera>| {
                     let Ok(mut label_text) = label_query.get_mut(label_entity) else {

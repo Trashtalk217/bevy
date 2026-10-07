@@ -34,7 +34,7 @@ impl SystemInformationDiagnosticsPlugin {
     pub const SYSTEM_MEM_USAGE: DiagnosticPath = DiagnosticPath::const_new("system/mem_usage");
     /// Process cpu usage in %
     pub const PROCESS_CPU_USAGE: DiagnosticPath = DiagnosticPath::const_new("process/cpu_usage");
-    /// Process memory usage in %
+    /// Process memory usage in GiB
     pub const PROCESS_MEM_USAGE: DiagnosticPath = DiagnosticPath::const_new("process/mem_usage");
 }
 
@@ -74,14 +74,12 @@ mod internal {
         pin::Pin,
         task::{Context, Poll},
     };
-    use std::sync::{
-        mpsc::{self, Receiver, Sender},
-        Arc,
-    };
+    use std::sync::mpsc::{self, Receiver, Sender};
 
     use alloc::{
         format,
         string::{String, ToString},
+        sync::Arc,
     };
     use atomic_waker::AtomicWaker;
     use bevy_app::{App, First, Startup, Update};

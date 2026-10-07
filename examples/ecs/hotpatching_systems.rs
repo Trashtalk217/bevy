@@ -40,7 +40,7 @@ fn update_text(mut text: Single<&mut Text>) {
 }
 
 fn on_click(
-    _click: On<Pointer<Click>>,
+    _click: On<PointerClick>,
     mut color: Single<&mut TextColor>,
     task_sender: Res<TaskSender>,
 ) {
@@ -70,7 +70,7 @@ fn setup(mut commands: Commands) {
             children![(
                 Text::default(),
                 TextFont {
-                    font_size: 100.0,
+                    font_size: FontSize::Px(100.0),
                     ..default()
                 },
             )],

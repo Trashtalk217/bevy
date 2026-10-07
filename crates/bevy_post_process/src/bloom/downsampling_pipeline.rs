@@ -27,7 +27,7 @@ pub struct BloomDownsamplingPipelineIds {
 #[derive(Resource)]
 pub struct BloomDownsamplingPipeline {
     /// Layout with a texture, a sampler, and uniforms
-    pub bind_group_layout: BindGroupLayout,
+    pub bind_group_layout: BindGroupLayoutDescriptor,
     pub sampler: Sampler,
     /// The asset handle for the fullscreen vertex shader.
     pub fullscreen_shader: FullscreenShader,
@@ -60,7 +60,7 @@ pub fn init_bloom_downsampling_pipeline(
     asset_server: Res<AssetServer>,
 ) {
     // Bind group layout
-    let bind_group_layout = render_device.create_bind_group_layout(
+    let bind_group_layout = BindGroupLayoutDescriptor::new(
         "bloom_downsampling_bind_group_layout_with_settings",
         &BindGroupLayoutEntries::sequential(
             ShaderStages::FRAGMENT,
@@ -88,7 +88,7 @@ pub fn init_bloom_downsampling_pipeline(
         bind_group_layout,
         sampler,
         fullscreen_shader: fullscreen_shader.clone(),
-        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "bloom.wgsl"),
+        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "bloom.wesl"),
     });
 }
 
@@ -138,6 +138,7 @@ impl SpecializedRenderPipeline for BloomDownsamplingPipeline {
                     blend: None,
                     write_mask: ColorWrites::ALL,
                 })],
+                constants: vec![],
             }),
             ..default()
         }

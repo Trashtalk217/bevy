@@ -6,18 +6,20 @@ use bevy_ecs::{
     entity::Entity,
     hierarchy::{ChildOf, Children},
     observer::On,
-    query::{Has, With},
+    query::{Has, With, Without},
     reflect::ReflectComponent,
     system::{Commands, Query},
 };
 use bevy_input::keyboard::{KeyCode, KeyboardInput};
 use bevy_input::ButtonState;
-use bevy_input_focus::FocusedInput;
-use bevy_picking::events::{Click, Pointer};
+use bevy_input_focus::{Focusable, FocusedInput};
+use bevy_picking::events::{
+    PointerCancel, PointerClick, PointerDragEnd, PointerPress, PointerRelease,
+};
 use bevy_reflect::Reflect;
-use bevy_ui::{Checkable, Checked, InteractionDisabled};
+use bevy_ui::{Checkable, Checked, InteractionDisabled, Pressed};
 
-use crate::ValueChange;
+use crate::{ActivateOnPress, ValueChange};
 
 /// Headless widget implementation for a "radio button group". This component is used to group
 /// multiple [`RadioButton`] components together, allowing them to behave as a single unit. It
@@ -35,17 +37,29 @@ use crate::ValueChange;
 /// associated with a particular constant value, and would be checked whenever that value is equal
 /// to the group's value. This also means that as long as each button's associated value is unique
 /// within the group, it should never be the case that more than one button is selected at a time.
-#[derive(Component, Debug)]
-#[require(AccessibilityNode(accesskit::Node::new(Role::RadioGroup)))]
+///
+/// **Note:** For information on how widget state is managed
+/// and how to respond to state changes, see the [crate-level documentation].
+/// [crate-level documentation]: crate
+#[derive(Component, Debug, Clone, Default)]
+#[require(AccessibilityNode(accesskit::Node::new(Role::RadioGroup)), Focusable)]
+#[derive(Reflect)]
+#[reflect(Component)]
 pub struct RadioGroup;
 
-/// Headless widget implementation for radio buttons. These should be enclosed within a
-/// [`RadioGroup`] widget, which is responsible for the mutual exclusion logic.
+/// Headless widget implementation for radio buttons. They can be used independently,
+/// but enclosing them in a [`RadioGroup`] widget allows them to behave as a single,
+/// mutually exclusive unit.
 ///
 /// According to the WAI-ARIA best practices document, radio buttons should not be focusable,
 /// but rather the enclosing group should be focusable.
 /// See <https://www.w3.org/WAI/ARIA/apg/patterns/radio>/
-#[derive(Component, Debug)]
+///
+/// The widget emits a [`ValueChange<bool>`] event with the value `true` whenever it becomes checked,
+/// either through a mouse click or when a [`RadioGroup`] checks the widget.
+/// If the [`RadioButton`] is focusable, it can also be checked using the `Enter` or `Space` keys,
+/// in which case the event will likewise be emitted.
+#[derive(Component, Debug, Clone, Default)]
 #[require(AccessibilityNode(accesskit::Node::new(Role::RadioButton)), Checkable)]
 #[derive(Reflect)]
 #[reflect(Component)]
@@ -132,91 +146,339 @@ fn radio_group_on_key_input(
 
             let (next_id, _) = radio_buttons[next_index];
 
-            // Trigger the on_change event for the newly checked radio button
+            // Trigger the value change event on the radio button
+            commands.trigger(ValueChange::<bool> {
+                source: next_id,
+                value: true,
+                is_final: true,
+            });
+            // Trigger the `ValueChange` event for the newly checked radio button on radio group
             commands.trigger(ValueChange::<Entity> {
                 source: ev.focused_entity,
                 value: next_id,
+                is_final: true,
             });
         }
     }
 }
 
-fn radio_group_on_button_click(
-    mut ev: On<Pointer<Click>>,
+// Provides functionality for standalone focusable [`RadioButton`] to react
+// on `Space` or `Enter` key press.
+fn radio_button_on_key_input(
+    mut ev: On<FocusedInput<KeyboardInput>>,
+    q_radio_button: Query<(Has<InteractionDisabled>, Has<Checked>), With<RadioButton>>,
     q_group: Query<(), With<RadioGroup>>,
-    q_radio: Query<(Has<Checked>, Has<InteractionDisabled>), With<RadioButton>>,
     q_parents: Query<&ChildOf>,
-    q_children: Query<&Children>,
     mut commands: Commands,
 ) {
-    if q_group.contains(ev.entity) {
-        // Starting with the original target, search upward for a radio button.
-        let radio_id = if q_radio.contains(ev.original_event_target()) {
-            ev.original_event_target()
-        } else {
-            // Search ancestors for the first radio button
-            let mut found_radio = None;
-            for ancestor in q_parents.iter_ancestors(ev.original_event_target()) {
-                if q_group.contains(ancestor) {
-                    // We reached a radio group before finding a radio button, bail out
-                    return;
-                }
-                if q_radio.contains(ancestor) {
-                    found_radio = Some(ancestor);
-                    break;
-                }
-            }
+    let Ok((disabled, checked)) = q_radio_button.get(ev.focused_entity) else {
+        // Not a radio button
+        return;
+    };
 
-            match found_radio {
-                Some(radio) => radio,
-                None => return, // No radio button found in the ancestor chain
-            }
-        };
-
-        // Radio button is disabled.
-        if q_radio.get(radio_id).unwrap().1 {
-            return;
-        }
-
-        // Gather all the enabled radio group descendants for exclusion.
-        let radio_buttons = q_children
-            .iter_descendants(ev.entity)
-            .filter_map(|child_id| match q_radio.get(child_id) {
-                Ok((checked, false)) => Some((child_id, checked)),
-                Ok((_, true)) | Err(_) => None,
-            })
-            .collect::<Vec<_>>();
-
-        if radio_buttons.is_empty() {
-            return; // No enabled radio buttons in the group
-        }
-
-        // Pick out the radio button that is currently checked.
+    let event = &ev.event().input;
+    if event.state == ButtonState::Pressed
+        && !event.repeat
+        && (event.key_code == KeyCode::Enter || event.key_code == KeyCode::Space)
+    {
         ev.propagate(false);
-        let current_radio = radio_buttons
-            .iter()
-            .find(|(_, checked)| *checked)
-            .map(|(id, _)| *id);
 
-        if current_radio == Some(radio_id) {
-            // If they clicked the currently checked radio button, do nothing
+        // Radio button is disabled or already checked
+        if disabled || checked {
             return;
         }
 
-        // Trigger the on_change event for the newly checked radio button
+        trigger_radio_button_and_radio_group_value_change(
+            ev.focused_entity,
+            &q_group,
+            &q_parents,
+            &mut commands,
+        );
+    }
+}
+
+fn radio_button_on_click(
+    mut click: On<PointerClick>,
+    q_group: Query<(), With<RadioGroup>>,
+    q_radio: Query<
+        (Has<InteractionDisabled>, Has<Checked>),
+        (With<RadioButton>, Without<ActivateOnPress>),
+    >,
+    q_parents: Query<&ChildOf>,
+    mut commands: Commands,
+) {
+    let Ok((disabled, checked)) = q_radio.get(click.entity) else {
+        // Not a radio button
+        return;
+    };
+
+    click.propagate(false);
+
+    // Radio button is disabled or already checked
+    if disabled || checked {
+        return;
+    }
+
+    trigger_radio_button_and_radio_group_value_change(
+        click.entity,
+        &q_group,
+        &q_parents,
+        &mut commands,
+    );
+}
+
+fn radio_button_on_pointer_down(
+    mut press: On<PointerPress>,
+    q_group: Query<(), With<RadioGroup>>,
+    mut q_radio: Query<
+        (
+            Entity,
+            Has<InteractionDisabled>,
+            Has<Checked>,
+            Has<Pressed>,
+            Has<ActivateOnPress>,
+        ),
+        With<RadioButton>,
+    >,
+    q_parents: Query<&ChildOf>,
+    mut commands: Commands,
+) {
+    if let Ok((radio, disabled, checked, pressed, activate_on_press)) =
+        q_radio.get_mut(press.entity)
+    {
+        press.propagate(false);
+        if !disabled && !pressed {
+            commands.entity(radio).insert(Pressed);
+            if activate_on_press && !checked {
+                trigger_radio_button_and_radio_group_value_change(
+                    press.entity,
+                    &q_group,
+                    &q_parents,
+                    &mut commands,
+                );
+            }
+        }
+    }
+}
+
+fn radio_button_on_pointer_up(
+    mut release: On<PointerRelease>,
+    mut q_radio: Query<(Entity, Has<InteractionDisabled>, Has<Pressed>), With<RadioButton>>,
+    mut commands: Commands,
+) {
+    if let Ok((radio, disabled, pressed)) = q_radio.get_mut(release.entity) {
+        release.propagate(false);
+        if !disabled && pressed {
+            commands.entity(radio).remove::<Pressed>();
+        }
+    }
+}
+
+fn radio_button_on_pointer_drag_end(
+    mut drag_end: On<PointerDragEnd>,
+    mut q_radio: Query<(Entity, Has<InteractionDisabled>, Has<Pressed>), With<RadioButton>>,
+    mut commands: Commands,
+) {
+    if let Ok((radio, disabled, pressed)) = q_radio.get_mut(drag_end.entity) {
+        drag_end.propagate(false);
+        if !disabled && pressed {
+            commands.entity(radio).remove::<Pressed>();
+        }
+    }
+}
+
+fn radio_button_on_pointer_cancel(
+    mut cancel: On<PointerCancel>,
+    mut q_radio: Query<(Entity, Has<InteractionDisabled>, Has<Pressed>), With<RadioButton>>,
+    mut commands: Commands,
+) {
+    if let Ok((radio, disabled, pressed)) = q_radio.get_mut(cancel.entity) {
+        cancel.propagate(false);
+        if !disabled && pressed {
+            commands.entity(radio).remove::<Pressed>();
+        }
+    }
+}
+
+fn trigger_radio_button_and_radio_group_value_change(
+    radio_button: Entity,
+    q_group: &Query<(), With<RadioGroup>>,
+    q_parents: &Query<&ChildOf>,
+    commands: &mut Commands,
+) {
+    commands.trigger(ValueChange::<bool> {
+        source: radio_button,
+        value: true,
+        is_final: true,
+    });
+
+    // Find if radio button is inside radio group
+    let radio_group = q_parents
+        .iter_ancestors(radio_button)
+        .find(|ancestor| q_group.contains(*ancestor));
+
+    // If is inside radio group
+    if let Some(radio_group) = radio_group {
+        // Trigger event for radio group
         commands.trigger(ValueChange::<Entity> {
-            source: ev.entity,
-            value: radio_id,
+            source: radio_group,
+            value: radio_button,
+            is_final: true,
         });
     }
 }
 
-/// Plugin that adds the observers for the [`RadioGroup`] widget.
+/// Plugin that adds the observers for [`RadioButton`] and [`RadioGroup`] widget.
 pub struct RadioGroupPlugin;
 
 impl Plugin for RadioGroupPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(radio_group_on_key_input)
-            .add_observer(radio_group_on_button_click);
+            .add_observer(radio_button_on_click)
+            .add_observer(radio_button_on_key_input)
+            .add_observer(radio_button_on_pointer_down)
+            .add_observer(radio_button_on_pointer_up)
+            .add_observer(radio_button_on_pointer_drag_end)
+            .add_observer(radio_button_on_pointer_cancel);
+    }
+}
+
+/// Observer function which updates the radio buttons in a group in response to a [`ValueChange`] event.
+/// This can be used to make the radio buttons automatically update their own states and within
+/// the correct radio group when clicked, as opposed to managing the states externally.
+pub fn radio_self_update(
+    value_change: On<ValueChange<Entity>>,
+    q_radio_group: Query<&Children, With<RadioGroup>>,
+    q_radio: Query<Entity, With<RadioButton>>,
+    mut commands: Commands,
+) {
+    // Get the children of the source radio group
+    let Ok(children) = q_radio_group.get(value_change.source) else {
+        return;
+    };
+
+    // Iterate the children of this radio group
+    let mut iter = q_radio.iter_many(children).matched();
+    while let Some(radio) = iter.fetch_next() {
+        if radio == value_change.value {
+            commands.entity(radio).insert(Checked);
+        } else {
+            commands.entity(radio).remove::<Checked>();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_app::App;
+    use bevy_input::InputPlugin;
+    use bevy_input_focus::{tab_navigation::TabNavigationPlugin, InputFocusPlugin};
+    use bevy_math::Vec2;
+    use bevy_picking::backend::HitData;
+    use bevy_picking::events::Pointer;
+    use bevy_picking::pointer::{Location, PointerButton, PointerId};
+    use bevy_window::{PrimaryWindow, Window, WindowRef};
+
+    /// Builds a headless app with the radio-group observers plus [`radio_self_update`], so that a
+    /// group's `ValueChange<Entity>` moves the [`Checked`] component onto the selected button.
+    fn radio_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins((
+            InputPlugin,
+            InputFocusPlugin,
+            TabNavigationPlugin,
+            RadioGroupPlugin,
+        ));
+        app.add_observer(radio_self_update);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.update();
+        (app, window)
+    }
+
+    fn window_location(window: Entity) -> Location {
+        Location {
+            target: bevy_camera::NormalizedRenderTarget::Window(
+                WindowRef::Entity(window).normalize(Some(window)).unwrap(),
+            ),
+            position: Vec2::ZERO,
+        }
+    }
+
+    /// Triggers the `PointerClick` event, the last event a real click ends with, on `target`.
+    fn click_entity(app: &mut App, target: Entity, window: Entity) {
+        app.world_mut().trigger(PointerClick {
+            entity: target,
+            pointer: Pointer::new(PointerId::Mouse, window_location(window)),
+            button: PointerButton::Primary,
+            hit: HitData::new(window, 0.0, None, None),
+            duration: core::time::Duration::from_millis(10),
+            count: 1,
+        });
+        app.update();
+    }
+
+    /// Clicking a radio option moves the selection to it. Clicking a different option moves it
+    /// again, and the previously-selected option is unchecked (mutual exclusion within the group).
+    #[test]
+    fn click_moves_radio_selection_within_group() {
+        let (mut app, window) = radio_app();
+        let group = app.world_mut().spawn((RadioGroup, ChildOf(window))).id();
+        let option_a = app.world_mut().spawn((RadioButton, ChildOf(group))).id();
+        let option_b = app.world_mut().spawn((RadioButton, ChildOf(group))).id();
+        app.update();
+
+        assert!(!app.world().entity(option_a).contains::<Checked>());
+        assert!(!app.world().entity(option_b).contains::<Checked>());
+
+        click_entity(&mut app, option_a, window);
+        assert!(app.world().entity(option_a).contains::<Checked>());
+        assert!(!app.world().entity(option_b).contains::<Checked>());
+
+        click_entity(&mut app, option_b, window);
+        assert!(
+            !app.world().entity(option_a).contains::<Checked>(),
+            "selecting another option must uncheck the previous one"
+        );
+        assert!(app.world().entity(option_b).contains::<Checked>());
+    }
+
+    /// Clicking an already-checked radio option leaves it selected (no toggle-off for radios).
+    #[test]
+    fn clicking_checked_radio_keeps_it_selected() {
+        let (mut app, window) = radio_app();
+        let group = app.world_mut().spawn((RadioGroup, ChildOf(window))).id();
+        let option = app.world_mut().spawn((RadioButton, ChildOf(group))).id();
+        app.update();
+
+        click_entity(&mut app, option, window);
+        assert!(app.world().entity(option).contains::<Checked>());
+
+        click_entity(&mut app, option, window);
+        assert!(
+            app.world().entity(option).contains::<Checked>(),
+            "clicking an already-selected radio must not deselect it"
+        );
+    }
+
+    /// A disabled radio option does not become selected on click.
+    #[test]
+    fn disabled_radio_button_does_not_select() {
+        let (mut app, window) = radio_app();
+        let group = app.world_mut().spawn((RadioGroup, ChildOf(window))).id();
+        let option = app
+            .world_mut()
+            .spawn((RadioButton, InteractionDisabled, ChildOf(group)))
+            .id();
+        app.update();
+
+        click_entity(&mut app, option, window);
+        assert!(
+            !app.world().entity(option).contains::<Checked>(),
+            "a disabled radio option must not become selected"
+        );
     }
 }

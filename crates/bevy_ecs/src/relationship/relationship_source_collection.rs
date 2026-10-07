@@ -176,7 +176,9 @@ impl RelationshipCollection for Vec<Entity> {
     }
 
     fn remove(&mut self, entity: Entity) -> bool {
-        if let Some(index) = <[Entity]>::iter(self).position(|e| *e == entity) {
+        // Scan from the back. Recently added entities live at the tail and are more likely to be
+        // despawned. This exploits temporal locality to keep the search cheap.
+        if let Some(index) = <[Entity]>::iter(self).rposition(|e| *e == entity) {
             Vec::remove(self, index);
             return true;
         }
@@ -248,15 +250,15 @@ impl OrderedRelationshipCollection for Vec<Entity> {
 
     fn place(&mut self, entity: Entity, index: usize) {
         if let Some(current) = <[Entity]>::iter(self).position(|e| *e == entity) {
-            let index = index.min(self.len());
             Vec::remove(self, current);
+            let index = index.min(self.len());
             self.insert(index, entity);
         };
     }
 }
 
 impl RelationshipCollection for EntityHashSet {
-    type Iter<'a> = core::iter::Copied<crate::entity::hash_set::Iter<'a>>;
+    type Iter<'a> = core::iter::Copied<crate::entity::hash_set::Iter<'a, Entity>>;
 
     fn new() -> Self {
         EntityHashSet::new()
@@ -267,7 +269,7 @@ impl RelationshipCollection for EntityHashSet {
     }
 
     fn reserve(&mut self, additional: usize) {
-        self.0.reserve(additional);
+        self.deref_mut().reserve(additional);
     }
 
     fn with_capacity(capacity: usize) -> Self {
@@ -279,13 +281,11 @@ impl RelationshipCollection for EntityHashSet {
     }
 
     fn remove(&mut self, entity: Entity) -> bool {
-        // We need to call the remove method on the underlying hash set,
-        // which takes its argument by reference
-        self.0.remove(&entity)
+        self.deref_mut().remove(&entity)
     }
 
     fn contains(&self, entity: Entity) -> bool {
-        self.0.contains(&entity)
+        self.deref().contains(&entity)
     }
 
     fn iter(&self) -> Self::Iter<'_> {
@@ -293,15 +293,15 @@ impl RelationshipCollection for EntityHashSet {
     }
 
     fn len(&self) -> usize {
-        self.len()
+        self.deref().len()
     }
 
     fn clear(&mut self) {
-        self.0.clear();
+        self.deref_mut().clear();
     }
 
     fn shrink_to_fit(&mut self) {
-        self.0.shrink_to_fit();
+        self.deref_mut().shrink_to_fit();
     }
 
     fn extend_from_iter(&mut self, entities: impl IntoIterator<Item = Entity>) {
@@ -476,16 +476,15 @@ impl<const N: usize> OrderedRelationshipCollection for SmallVec<[Entity; N]> {
 
     fn place_most_recent(&mut self, index: usize) {
         if let Some(entity) = self.pop() {
-            let index = index.min(self.len() - 1);
+            let index = index.min(self.len());
             self.insert(index, entity);
         }
     }
 
     fn place(&mut self, entity: Entity, index: usize) {
         if let Some(current) = <[Entity]>::iter(self).position(|e| *e == entity) {
-            // The len is at least 1, so the subtraction is safe.
-            let index = index.min(self.len() - 1);
             SmallVec::<[Entity; N]>::remove(self, current);
+            let index = index.min(self.len());
             self.insert(index, entity);
         };
     }
@@ -547,7 +546,7 @@ impl<S: BuildHasher + Default> RelationshipCollection for IndexSet<Entity, S> {
 }
 
 impl RelationshipCollection for EntityIndexSet {
-    type Iter<'a> = core::iter::Copied<crate::entity::index_set::Iter<'a>>;
+    type Iter<'a> = core::iter::Copied<crate::entity::index_set::Iter<'a, Entity>>;
 
     fn new() -> Self {
         EntityIndexSet::new()
@@ -558,7 +557,7 @@ impl RelationshipCollection for EntityIndexSet {
     }
 
     fn reserve(&mut self, additional: usize) {
-        self.deref_mut().reserve(additional);
+        self.reserve(additional);
     }
 
     fn with_capacity(capacity: usize) -> Self {
@@ -570,7 +569,7 @@ impl RelationshipCollection for EntityIndexSet {
     }
 
     fn remove(&mut self, entity: Entity) -> bool {
-        self.deref_mut().shift_remove(&entity)
+        self.shift_remove(&entity)
     }
 
     fn contains(&self, entity: Entity) -> bool {
@@ -586,11 +585,11 @@ impl RelationshipCollection for EntityIndexSet {
     }
 
     fn clear(&mut self) {
-        self.deref_mut().clear();
+        self.clear();
     }
 
     fn shrink_to_fit(&mut self) {
-        self.deref_mut().shrink_to_fit();
+        self.shrink_to_fit();
     }
 
     fn extend_from_iter(&mut self, entities: impl IntoIterator<Item = Entity>) {
@@ -655,7 +654,8 @@ impl RelationshipCollection for BTreeSet<Entity> {
 mod tests {
     use super::*;
     use crate::prelude::{Component, World};
-    use crate::relationship::RelationshipTarget;
+    use crate::relationship::{OrderedRelationshipCollection, RelationshipTarget};
+    use alloc::vec;
 
     #[test]
     fn vec_relationship_source_collection() {
@@ -718,6 +718,52 @@ mod tests {
         let rel_target = world.get::<RelTarget>(b).unwrap();
         let collection = rel_target.collection();
         assert_eq!(collection, &a);
+    }
+
+    #[test]
+    fn vec_ordered_relationship_source_collection() {
+        let mut world = World::new();
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+
+        let mut v: Vec<Entity> = vec![];
+        v.insert_stable(10, a);
+        assert_eq!(v, vec![a]);
+        v.insert_stable(10, b);
+        assert_eq!(v, vec![a, b]);
+        v.place(b, 0);
+        assert_eq!(v, vec![b, a]);
+        v.place(b, 10);
+        assert_eq!(v, vec![a, b]);
+        v.place(b, 10);
+        assert_eq!(v, vec![a, b]);
+        v.place_most_recent(0);
+        assert_eq!(v, vec![b, a]);
+        v.place_most_recent(10);
+        assert_eq!(v, vec![b, a]);
+    }
+
+    #[test]
+    fn smallvec_ordered_relationship_source_collection() {
+        let mut world = World::new();
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+
+        let mut v = SmallVec::<[Entity; 2]>::new();
+        v.insert_stable(10, a);
+        assert_eq!(v.as_ref(), vec![a]);
+        v.insert_stable(10, b);
+        assert_eq!(v.as_ref(), vec![a, b]);
+        v.place(b, 0);
+        assert_eq!(v.as_ref(), vec![b, a]);
+        v.place(b, 10);
+        assert_eq!(v.as_ref(), vec![a, b]);
+        v.place(b, 10);
+        assert_eq!(v.as_ref(), vec![a, b]);
+        v.place_most_recent(0);
+        assert_eq!(v.as_ref(), vec![b, a]);
+        v.place_most_recent(10);
+        assert_eq!(v.as_ref(), vec![b, a]);
     }
 
     #[test]

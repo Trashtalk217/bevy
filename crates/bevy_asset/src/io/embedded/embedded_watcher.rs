@@ -28,7 +28,7 @@ impl EmbeddedWatcher {
     pub fn new(
         dir: Dir,
         root_paths: Arc<RwLock<HashMap<Box<Path>, PathBuf>>>,
-        sender: crossbeam_channel::Sender<AssetSourceEvent>,
+        sender: async_channel::Sender<AssetSourceEvent>,
         debounce_wait_time: Duration,
     ) -> Self {
         let root = get_base_path();
@@ -50,7 +50,7 @@ impl AssetWatcher for EmbeddedWatcher {}
 /// binary-embedded Rust source files. This will read the contents of changed files from the file system and overwrite
 /// the initial static bytes from the file embedded in the binary.
 pub(crate) struct EmbeddedEventHandler {
-    sender: crossbeam_channel::Sender<AssetSourceEvent>,
+    sender: async_channel::Sender<AssetSourceEvent>,
     root_paths: Arc<RwLock<HashMap<Box<Path>, PathBuf>>>,
     root: PathBuf,
     dir: Dir,
@@ -63,12 +63,12 @@ impl FilesystemEventHandler for EmbeddedEventHandler {
     }
 
     fn get_path(&self, absolute_path: &Path) -> Option<(PathBuf, bool)> {
-        let (local_path, is_meta) = get_asset_path(&self.root, absolute_path);
+        let (_local_path, is_meta) = get_asset_path(&self.root, absolute_path);
         let final_path = self
             .root_paths
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(local_path.as_path())?
+            .get(absolute_path)?
             .clone();
         if is_meta {
             warn!("Meta file asset hot-reloading is not supported yet: {final_path:?}");
@@ -90,7 +90,7 @@ impl FilesystemEventHandler for EmbeddedEventHandler {
                 }
             }
             self.last_event = Some(event.clone());
-            self.sender.send(event).unwrap();
+            self.sender.send_blocking(event).unwrap();
         }
     }
 }

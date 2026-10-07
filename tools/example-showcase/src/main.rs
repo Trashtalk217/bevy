@@ -596,6 +596,7 @@ code_path = \"content/examples{}/{}\"
 shader_code_paths = {:?}
 github_code_path = \"{}\"
 header_message = \"Examples ({})\"
+required_features = {:?}
 +++
 
 {}
@@ -612,16 +613,16 @@ header_message = \"Examples ({})\"
                                 WebApi::Webgl2 => "",
                             },
                             to_show.category,
-                            &to_show.technical_name.replace('_', "-"),
-                            &to_show.technical_name.replace('_', "-"),
+                            to_show.technical_name.replace('_', "-"),
+                            to_show.technical_name.replace('_', "-"),
                             match api {
                                 WebApi::Webgpu => "-webgpu",
                                 WebApi::Webgl2 => "",
                             },
-                            &beautified_category,
-                            &to_show.technical_name.replace('_', "-"),
-                            &to_show.category,
-                            &to_show.technical_name,
+                            beautified_category,
+                            to_show.technical_name.replace('_', "-"),
+                            to_show.category,
+                            to_show.technical_name,
                             match api {
                                 WebApi::Webgpu => "-webgpu",
                                 WebApi::Webgl2 => "",
@@ -632,11 +633,12 @@ header_message = \"Examples ({})\"
                                 .collect::<PathBuf>()
                                 .display(),
                             to_show.shader_paths,
-                            &to_show.path,
+                            to_show.path,
                             match api {
                                 WebApi::Webgpu => "WebGPU",
                                 WebApi::Webgl2 => "WebGL2",
                             },
+                            to_show.required_features,
                             docblock,
                         )
                         .as_bytes(),

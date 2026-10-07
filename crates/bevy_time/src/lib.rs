@@ -14,14 +14,18 @@ extern crate alloc;
 
 /// Common run conditions
 pub mod common_conditions;
+mod delayed_commands;
 mod fixed;
+mod moment;
 mod real;
 mod stopwatch;
 mod time;
 mod timer;
 mod virt;
 
+pub use delayed_commands::*;
 pub use fixed::*;
+pub use moment::*;
 pub use real::*;
 pub use stopwatch::*;
 pub use time::*;
@@ -33,10 +37,10 @@ pub use virt::*;
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
     #[doc(hidden)]
-    pub use crate::{Fixed, Real, Time, Timer, TimerMode, Virtual};
+    pub use crate::{DelayedCommandsExt, Fixed, Real, Time, Timer, TimerMode, Virtual};
 }
 
-use bevy_app::{prelude::*, RunFixedMainLoop};
+use bevy_app::{prelude::*, OnAppExitSystems, RunFixedMainLoop};
 use bevy_ecs::{
     message::{
         message_update_system, signal_message_update_system, MessageRegistry, ShouldUpdateMessages,
@@ -61,10 +65,6 @@ pub struct TimePlugin;
 #[derive(Debug, PartialEq, Eq, Clone, Hash, SystemSet)]
 pub struct TimeSystems;
 
-/// Deprecated alias for [`TimeSystems`].
-#[deprecated(since = "0.17.0", note = "Renamed to `TimeSystems`.")]
-pub type TimeSystem = TimeSystems;
-
 impl Plugin for TimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Time>()
@@ -87,9 +87,16 @@ impl Plugin for TimePlugin {
                 .in_set(TimeSystems)
                 .ambiguous_with(message_update_system),
         )
+        .add_systems(PreUpdate, check_delayed_command_queues)
         .add_systems(
             RunFixedMainLoop,
             run_fixed_main_schedule.in_set(RunFixedMainLoopSystems::FixedMainLoop),
+        )
+        .add_systems(
+            Last,
+            silence_delayed_command_queues_on_exit
+                .in_set(OnAppExitSystems)
+                .run_if(|messages: Res<Messages<AppExit>>| !messages.is_empty()),
         );
 
         // Ensure the messages are not dropped until `FixedMain` systems can observe them
@@ -118,6 +125,9 @@ pub enum TimeUpdateStrategy {
     ManualInstant(Instant),
     /// [`Time`] will be incremented by the specified [`Duration`] each frame.
     ManualDuration(Duration),
+    /// [`Time`] will be incremented by the fixed timestep each frame, multiplied by the specified factor `n`.
+    /// This means that a call to [`App::update`] will always run the fixed loop exactly n times.
+    FixedTimesteps(u32),
 }
 
 /// Channel resource used to receive time from the render world.
@@ -144,6 +154,7 @@ pub fn create_time_channels() -> (TimeSender, TimeReceiver) {
 pub fn time_system(
     mut real_time: ResMut<Time<Real>>,
     mut virtual_time: ResMut<Time<Virtual>>,
+    fixed_time: Res<Time<Fixed>>,
     mut time: ResMut<Time>,
     update_strategy: Res<TimeUpdateStrategy>,
     #[cfg(feature = "std")] time_recv: Option<Res<TimeReceiver>>,
@@ -175,6 +186,9 @@ pub fn time_system(
         }
         TimeUpdateStrategy::ManualInstant(instant) => real_time.update_with_instant(*instant),
         TimeUpdateStrategy::ManualDuration(duration) => real_time.update_with_duration(*duration),
+        TimeUpdateStrategy::FixedTimesteps(factor) => {
+            real_time.update_with_duration(fixed_time.timestep() * *factor);
+        }
     }
 
     update_virtual_time(&mut time, &mut virtual_time, &real_time);

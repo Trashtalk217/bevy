@@ -30,6 +30,11 @@ impl BuildHasher for FixedHasher {
     }
 }
 
+/// Hashes one value with the deterministic [`FixedHasher`].
+pub fn fixed_hash_one(x: impl Hash) -> u64 {
+    FixedHasher.hash_one(x)
+}
+
 /// A pre-hashed value of a specific type. Pre-hashing enables memoization of hashes that are expensive to compute.
 ///
 /// It also enables faster [`PartialEq`] comparisons by short circuiting on hash equality.
@@ -52,6 +57,12 @@ impl<V: Hash, H: BuildHasher + Default> Hashed<V, H> {
         }
     }
 
+    /// Mutates the current value and re-computes the hash.
+    pub fn mutate(&mut self, func: impl FnOnce(&mut V)) {
+        func(&mut self.value);
+        self.hash = H::default().hash_one(&self.value);
+    }
+
     /// The pre-computed hash.
     #[inline]
     pub fn hash(&self) -> u64 {
@@ -63,6 +74,12 @@ impl<V, H> Hash for Hashed<V, H> {
     #[inline]
     fn hash<R: Hasher>(&self, state: &mut R) {
         state.write_u64(self.hash);
+    }
+}
+
+impl<V: Hash, H: BuildHasher + Default> From<V> for Hashed<V, H> {
+    fn from(value: V) -> Self {
+        Self::new(value)
     }
 }
 

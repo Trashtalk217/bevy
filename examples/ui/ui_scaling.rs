@@ -1,6 +1,7 @@
 //! This example illustrates the [`UiScale`] resource from `bevy_ui`.
 
 use bevy::{color::palettes::css::*, prelude::*};
+
 use core::time::Duration;
 
 const SCALE_TIME: u64 = 400;
@@ -25,7 +26,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2d);
 
     let text_font = TextFont {
-        font_size: 13.,
+        font_size: FontSize::Px(13.),
         ..default()
     };
 
@@ -75,7 +76,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         });
 }
 
-/// System that changes the scale of the ui when pressing up or down on the keyboard.
+/// System that changes the scale of the UI when pressing up or down on the keyboard.
 fn change_scaling(input: Res<ButtonInput<KeyCode>>, mut ui_scale: ResMut<TargetScale>) {
     if input.just_pressed(KeyCode::ArrowUp) {
         let scale = (ui_scale.target_scale * 2.0).min(8.);
