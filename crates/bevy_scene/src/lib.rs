@@ -2370,10 +2370,10 @@ mod tests {
             unreachable!()
         };
         assert_eq!(a.get::<Name>().unwrap().as_str(), "Child1");
-        assert_eq!(a.get::<ChildOf>().unwrap().get(), root);
+        assert_eq!(*a.get::<ChildOf>().unwrap().get(), root);
 
         assert_eq!(b.get::<Name>().unwrap().as_str(), "Child2");
-        assert_eq!(b.get::<ChildOf>().unwrap().get(), a.id());
+        assert_eq!(*b.get::<ChildOf>().unwrap().get(), a.id());
     }
 
     #[test]
